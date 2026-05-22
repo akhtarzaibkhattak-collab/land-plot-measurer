@@ -1,5 +1,5 @@
 import { Feather } from "@expo/vector-icons";
-import TextRecognition from "@react-native-ml-kit/text-recognition";
+import { recognizeMeasurements } from "@/utils/textRecognition";
 import * as Haptics from "expo-haptics";
 import * as ImagePicker from "expo-image-picker";
 import * as Print from "expo-print";
@@ -609,28 +609,15 @@ export default function PlotScreen() {
     setBgImage(uri);
 
     // ── Auto-detect measurements written on the image ──────────────────────
-    if (Platform.OS !== "web") {
-      setOcrLoading(true);
-      try {
-        const result = await TextRecognition.recognize(uri);
-        const fullText = result.text ?? "";
-        // Match patterns: "70 feet", "70ft", "70'", "70 FT", "70.5 foot" etc.
-        const regex = /(\d+(?:\.\d+)?)\s*(?:feet|foot|ft|')/gi;
-        const found: number[] = [];
-        let m: RegExpExecArray | null;
-        while ((m = regex.exec(fullText)) !== null) {
-          const v = parseFloat(m[1]);
-          if (v > 0 && !found.includes(v)) found.push(v);
-        }
-        if (found.length > 0) {
-          setOcrMeasurements(found);
-          setShowOcrModal(true);
-        }
-      } catch {
-        // OCR failed silently — user can still enter manually
-      } finally {
-        setOcrLoading(false);
+    setOcrLoading(true);
+    try {
+      const found = await recognizeMeasurements(uri);
+      if (found.length > 0) {
+        setOcrMeasurements(found);
+        setShowOcrModal(true);
       }
+    } finally {
+      setOcrLoading(false);
     }
   };
 
