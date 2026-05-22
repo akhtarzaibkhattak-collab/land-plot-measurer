@@ -1,4 +1,5 @@
 import { Feather } from "@expo/vector-icons";
+import TextRecognition from "@react-native-ml-kit/text-recognition";
 import * as Haptics from "expo-haptics";
 import * as ImagePicker from "expo-image-picker";
 import * as Print from "expo-print";
@@ -394,6 +395,15 @@ export default function PlotScreen() {
   const [overrideValue,     setOverrideValue]     = useState("");
   const pendingOverrideSeg  = useRef<LabeledSeg | null>(null);
 
+  // Zoom state (scale + pan offset applied to SVG <G> transform)
+  const [zoom, setZoom]  = useState({ scale: 1, tx: 0, ty: 0 });
+  const zoomRef          = useRef({ scale: 1, tx: 0, ty: 0 });
+
+  // OCR
+  const [ocrMeasurements, setOcrMeasurements] = useState<number[]>([]);
+  const [showOcrModal,    setShowOcrModal]    = useState(false);
+  const [ocrLoading,      setOcrLoading]      = useState(false);
+
   // Mutable refs for PanResponder closures
   const pointsRef        = useRef<Point[]>([]);
   const isClosedRef      = useRef(false);
@@ -403,6 +413,10 @@ export default function PlotScreen() {
   const labeledSegsRef   = useRef<LabeledSeg[]>([]);
   const px2ftRef         = useRef<number | null>(null);
   const openOverrideRef  = useRef<((seg: LabeledSeg) => void)>(() => {});
+
+  // Pinch tracking
+  const isPinchingRef    = useRef(false);
+  const pinchStartRef    = useRef({ dist: 0, scale: 1, tx: 0, ty: 0, cx: 0, cy: 0 });
 
   // ── Load saved plot ───────────────────────────────────────────────────────
   useEffect(() => {
@@ -425,15 +439,41 @@ export default function PlotScreen() {
   const panResponder = useRef(
     PanResponder.create({
       onStartShouldSetPanResponder: () => true,
-      onMoveShouldSetPanResponder:  () => draggingIndex.current >= 0,
+      onMoveShouldSetPanResponder:  (evt) =>
+        evt.nativeEvent.touches.length >= 2 || draggingIndex.current >= 0,
 
       onPanResponderGrant: (evt: GestureResponderEvent) => {
-        const { locationX: x, locationY: y } = evt.nativeEvent;
+        const touches = evt.nativeEvent.touches;
+
+        // ── 2-finger pinch/pan start ──────────────────────────────────────
+        if (touches.length >= 2) {
+          isPinchingRef.current = true;
+          draggingIndex.current = -1;
+          const dx = touches[1].locationX - touches[0].locationX;
+          const dy = touches[1].locationY - touches[0].locationY;
+          const d  = Math.sqrt(dx * dx + dy * dy);
+          const { scale, tx, ty } = zoomRef.current;
+          pinchStartRef.current = {
+            dist:  d,
+            scale,
+            tx,
+            ty,
+            cx: (touches[0].locationX + touches[1].locationX) / 2,
+            cy: (touches[0].locationY + touches[1].locationY) / 2,
+          };
+          return;
+        }
+
+        isPinchingRef.current = false;
+
+        // ── Single-finger: inverse-transform to canvas logical coords ─────
+        const { scale, tx, ty } = zoomRef.current;
+        const x = (evt.nativeEvent.locationX - tx) / scale;
+        const y = (evt.nativeEvent.locationY - ty) / scale;
         const pts    = pointsRef.current;
         const closed = isClosedRef.current;
 
         if (closed) {
-          // 1) Drag existing corner?
           let minD = Infinity, closest = -1;
           pts.forEach((p, i) => {
             const d = dist({ x, y }, p);
@@ -444,8 +484,6 @@ export default function PlotScreen() {
             dragStartPoint.current = { ...pts[closest] };
             return;
           }
-
-          // 2) Tap a labeled segment for override?
           const segs = labeledSegsRef.current;
           for (const seg of segs) {
             const mid = { x: (seg.a.x + seg.b.x) / 2, y: (seg.a.y + seg.b.y) / 2 };
@@ -457,7 +495,6 @@ export default function PlotScreen() {
           return;
         }
 
-        // Close polygon
         if (pts.length >= 3 && dist({ x, y }, pts[0]) < CLOSE_THRESHOLD) {
           isClosedRef.current = true;
           setIsClosed(true);
@@ -466,7 +503,6 @@ export default function PlotScreen() {
           return;
         }
 
-        // Drag open-polygon corner
         let minD = Infinity, cnf = -1;
         for (let i = 1; i < pts.length; i++) {
           const d = dist({ x, y }, pts[i]);
@@ -478,7 +514,6 @@ export default function PlotScreen() {
           return;
         }
 
-        // Add new corner
         const np = [...pts, { x, y }];
         pointsRef.current = np;
         setPoints(np);
@@ -486,21 +521,42 @@ export default function PlotScreen() {
           Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
       },
 
-      onPanResponderMove: (_: GestureResponderEvent, gs: PanResponderGestureState) => {
+      onPanResponderMove: (evt: GestureResponderEvent, gs: PanResponderGestureState) => {
+        const touches = evt.nativeEvent.touches;
+
+        // ── Pinch: update scale toward pinch center ───────────────────────
+        if (touches.length >= 2 || isPinchingRef.current) {
+          if (touches.length < 2) return;
+          const dx = touches[1].locationX - touches[0].locationX;
+          const dy = touches[1].locationY - touches[0].locationY;
+          const newDist   = Math.sqrt(dx * dx + dy * dy);
+          const ps        = pinchStartRef.current;
+          const newScale  = Math.max(0.5, Math.min(6, ps.scale * newDist / ps.dist));
+          const scaleDelta = newScale / ps.scale;
+          const newTx = ps.cx - scaleDelta * (ps.cx - ps.tx);
+          const newTy = ps.cy - scaleDelta * (ps.cy - ps.ty);
+          zoomRef.current = { scale: newScale, tx: newTx, ty: newTy };
+          setZoom({ scale: newScale, tx: newTx, ty: newTy });
+          return;
+        }
+
+        // ── Single-finger corner drag ─────────────────────────────────────
         const idx = draggingIndex.current;
         if (idx < 0) return;
         const { w, h } = canvasSizeRef.current;
+        const { scale } = zoomRef.current;
         const sp = dragStartPoint.current;
-        const nx = Math.max(0, Math.min(w, sp.x + gs.dx));
-        const ny = Math.max(0, Math.min(h, sp.y + gs.dy));
+        // gs.dx/dy are in screen pixels; divide by scale for logical pixels
+        const nx = Math.max(0, Math.min(w, sp.x + gs.dx / scale));
+        const ny = Math.max(0, Math.min(h, sp.y + gs.dy / scale));
         const np = [...pointsRef.current];
         np[idx] = { x: nx, y: ny };
         pointsRef.current = np;
         setPoints([...np]);
       },
 
-      onPanResponderRelease:   () => { draggingIndex.current = -1; },
-      onPanResponderTerminate: () => { draggingIndex.current = -1; },
+      onPanResponderRelease:   () => { draggingIndex.current = -1; isPinchingRef.current = false; },
+      onPanResponderTerminate: () => { draggingIndex.current = -1; isPinchingRef.current = false; },
     })
   ).current;
 
@@ -522,10 +578,17 @@ export default function PlotScreen() {
     pointsRef.current   = [];
     isClosedRef.current = false;
     draggingIndex.current = -1;
+    zoomRef.current = { scale: 1, tx: 0, ty: 0 };
+    setZoom({ scale: 1, tx: 0, ty: 0 });
     setPoints([]);
     setIsClosed(false);
     setShowDiv(false);
     if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+  };
+
+  const resetZoom = () => {
+    zoomRef.current = { scale: 1, tx: 0, ty: 0 };
+    setZoom({ scale: 1, tx: 0, ty: 0 });
   };
 
   const pickImage = async () => {
@@ -536,8 +599,39 @@ export default function PlotScreen() {
         return;
       }
     }
-    const r = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ImagePicker.MediaTypeOptions.Images, quality: 0.85 });
-    if (!r.canceled) setBgImage(r.assets[0].uri);
+    const r = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      quality: 0.85,
+    });
+    if (r.canceled) return;
+
+    const uri = r.assets[0].uri;
+    setBgImage(uri);
+
+    // ── Auto-detect measurements written on the image ──────────────────────
+    if (Platform.OS !== "web") {
+      setOcrLoading(true);
+      try {
+        const result = await TextRecognition.recognize(uri);
+        const fullText = result.text ?? "";
+        // Match patterns: "70 feet", "70ft", "70'", "70 FT", "70.5 foot" etc.
+        const regex = /(\d+(?:\.\d+)?)\s*(?:feet|foot|ft|')/gi;
+        const found: number[] = [];
+        let m: RegExpExecArray | null;
+        while ((m = regex.exec(fullText)) !== null) {
+          const v = parseFloat(m[1]);
+          if (v > 0 && !found.includes(v)) found.push(v);
+        }
+        if (found.length > 0) {
+          setOcrMeasurements(found);
+          setShowOcrModal(true);
+        }
+      } catch {
+        // OCR failed silently — user can still enter manually
+      } finally {
+        setOcrLoading(false);
+      }
+    }
   };
 
   const openSaveModal = () => {
@@ -683,7 +777,7 @@ export default function PlotScreen() {
   const svgPts      = points.map(p => `${p.x},${p.y}`).join(" ");
   const canvasH     = canvasSize.h;
   const sides       = getSides(points, isClosed);
-  const canvasHeight = Math.round(SCREEN_H * 0.49);
+  const canvasHeight = Math.round(SCREEN_H * 0.62);
   const topPad      = Platform.OS === "web" ? 67 : insets.top;
   const bottomPad   = Platform.OS === "web" ? 34 : insets.bottom;
 
@@ -703,9 +797,16 @@ export default function PlotScreen() {
           <Text style={styles.headerSub}>1 Marla = {MARLA_SQ_FT} sq ft</Text>
         </View>
         <View style={styles.headerActions}>
-          <TouchableOpacity style={styles.iconBtn} onPress={pickImage}>
-            <Feather name="image" size={18} color="#F59E0B" />
+          <TouchableOpacity style={styles.iconBtn} onPress={pickImage} disabled={ocrLoading}>
+            {ocrLoading
+              ? <ActivityIndicator size="small" color="#F59E0B" />
+              : <Feather name="image" size={18} color="#F59E0B" />}
           </TouchableOpacity>
+          {zoom.scale !== 1 && (
+            <TouchableOpacity style={[styles.iconBtn, styles.iconBtnZoom]} onPress={resetZoom}>
+              <Feather name="minimize-2" size={18} color="#22D3A3" />
+            </TouchableOpacity>
+          )}
           <TouchableOpacity style={[styles.iconBtn, isClosed && styles.iconBtnSave]} onPress={openSaveModal} disabled={!isClosed}>
             <Feather name="bookmark" size={18} color={isClosed ? "#22D3A3" : "#1E2D45"} />
           </TouchableOpacity>
@@ -730,6 +831,8 @@ export default function PlotScreen() {
         {...panResponder.panHandlers}
       >
         <Svg width={canvasSize.w} height={canvasH} style={StyleSheet.absoluteFill}>
+          {/* All SVG content wrapped in zoom transform */}
+          <G transform={`translate(${zoom.tx},${zoom.ty}) scale(${zoom.scale})`}>
           {bgImage && canvasSize.w > 0 && (
             <SvgImage href={bgImage} x={0} y={0} width={canvasSize.w} height={canvasH} preserveAspectRatio="xMidYMid meet" />
           )}
@@ -857,6 +960,7 @@ export default function PlotScreen() {
                 fill={i === 0 ? "#F59E0B" : "#FCD34D"} stroke="#0B1120" strokeWidth={1.5} />
             </React.Fragment>
           ))}
+          </G>{/* end zoom G */}
         </Svg>
 
         {/* Hint overlays */}
@@ -1083,6 +1187,41 @@ export default function PlotScreen() {
         </View>
       </Modal>
 
+      {/* ── OCR Measurements Modal ─────────────────────────────────────────── */}
+      <Modal visible={showOcrModal} transparent animationType="fade" onRequestClose={() => setShowOcrModal(false)}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalBox}>
+            <View style={styles.modalHeader}>
+              <Feather name="search" size={20} color="#22D3A3" />
+              <Text style={styles.modalTitle}>Measurements Detected</Text>
+            </View>
+            <Text style={styles.modalSub}>
+              Found these measurements written on the image. Tap one to use it as the canvas width (scale reference).
+            </Text>
+            <View style={styles.ocrList}>
+              {ocrMeasurements.map((v, i) => (
+                <TouchableOpacity
+                  key={i}
+                  style={styles.ocrItem}
+                  onPress={() => {
+                    setScaleWidth(v.toString());
+                    setShowOcrModal(false);
+                    if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+                  }}
+                >
+                  <Feather name="maximize-2" size={14} color="#F59E0B" />
+                  <Text style={styles.ocrItemText}>{v} feet</Text>
+                  <Feather name="chevron-right" size={14} color="#475569" />
+                </TouchableOpacity>
+              ))}
+            </View>
+            <TouchableOpacity style={styles.modalCancel} onPress={() => setShowOcrModal(false)}>
+              <Text style={styles.modalCancelText}>Dismiss — enter manually</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
       {/* ── Manual Override Modal ──────────────────────────────────────────── */}
       <Modal visible={showOverrideModal} transparent animationType="fade" onRequestClose={() => setShowOverrideModal(false)}>
         <View style={styles.modalOverlay}>
@@ -1148,6 +1287,7 @@ const styles = StyleSheet.create({
   headerActions:{ flexDirection: "row", gap: 5 },
   iconBtn:      { width: 36, height: 36, borderRadius: 10, backgroundColor: "#151F32", alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: "#1E2D45" },
   iconBtnSave:  { borderColor: "rgba(34,211,163,0.35)", backgroundColor: "rgba(34,211,163,0.08)" },
+  iconBtnZoom:  { borderColor: "rgba(34,211,163,0.5)", backgroundColor: "rgba(34,211,163,0.12)" },
 
   canvasWrapper:{ marginHorizontal: 12, marginBottom: 6, borderRadius: 14, overflow: "hidden", backgroundColor: "#0A1929", borderWidth: 1, borderColor: "#1E2D45" },
   emptyState:   { ...StyleSheet.absoluteFillObject, alignItems: "center", justifyContent: "center", gap: 10, paddingHorizontal: 32 },
@@ -1230,4 +1370,8 @@ const styles = StyleSheet.create({
   overrideInputRow: { flexDirection: "row", alignItems: "center", gap: 10 },
   overrideUnit:     { fontSize: 16, fontWeight: "700", color: "#F59E0B" },
   overrideNote:     { fontSize: 11, color: "#475569", fontStyle: "italic" },
+
+  ocrList:     { gap: 8 },
+  ocrItem:     { flexDirection: "row", alignItems: "center", gap: 10, backgroundColor: "rgba(245,158,11,0.07)", borderWidth: 1, borderColor: "rgba(245,158,11,0.2)", borderRadius: 10, paddingHorizontal: 14, paddingVertical: 11 },
+  ocrItemText: { flex: 1, fontSize: 15, fontWeight: "700", color: "#FCD34D" },
 });
