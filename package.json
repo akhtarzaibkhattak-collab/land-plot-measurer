@@ -6,21 +6,14 @@
   "scripts": {
     "start": "expo start",
     "android": "expo run:android",
-    "ios": "expo run:ios",
-    "build": "node scripts/build.js",
-    "serve": "node server/serve.js"
+    "ios": "expo run:ios"
   },
-  "devDependencies": {
+  "dependencies": {
     "@babel/core": "^7.25.2",
     "@expo-google-fonts/inter": "^0.4.0",
-    "@expo/cli": "54.0.23",
-    "@expo/ngrok": "^4.1.0",
     "@expo/vector-icons": "^15.0.3",
     "@react-native-async-storage/async-storage": "2.2.0",
     "@tanstack/react-query": "^5.90.21",
-    "@types/react": "~19.1.10",
-    "@types/react-dom": "~19.1.7",
-    "babel-plugin-react-compiler": "^19.0.0-beta-e993439-20250117",
     "expo": "~54.0.27",
     "expo-blur": "~15.0.8",
     "expo-constants": "~18.0.11",
@@ -31,7 +24,9 @@
     "expo-linear-gradient": "~15.0.8",
     "expo-linking": "~8.0.10",
     "expo-location": "~19.0.8",
+    "expo-print": "^55.0.15",
     "expo-router": "~6.0.17",
+    "expo-sharing": "^55.0.19",
     "expo-splash-screen": "~31.0.12",
     "expo-status-bar": "~3.0.9",
     "expo-symbols": "~1.0.8",
@@ -46,11 +41,13 @@
     "react-native-screens": "~4.16.0",
     "react-native-svg": "15.12.1",
     "react-native-web": "^0.21.0",
-    "typescript": "~5.9.2",
     "zod": "^3.25.76"
   },
-  "dependencies": {
-    "expo-print": "^55.0.15",
-    "expo-sharing": "^55.0.19"
+  "devDependencies": {
+    "@expo/cli": "54.0.23",
+    "@types/react": "~19.1.10",
+    "@types/react-dom": "~19.1.7",
+    "babel-plugin-react-compiler": "^19.0.0-beta-e993439-20250117",
+    "typescript": "~5.9.2"
   }
 }
