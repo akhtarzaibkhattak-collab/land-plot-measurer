@@ -399,6 +399,11 @@ export default function PlotScreen() {
   const [zoom, setZoom]  = useState({ scale: 1, tx: 0, ty: 0 });
   const zoomRef          = useRef({ scale: 1, tx: 0, ty: 0 });
 
+  // Color customization
+  const [lineColor,       setLineColor]       = useState("#F59E0B");
+  const [labelColor,      setLabelColor]      = useState("#FCD34D");
+  const [showColorModal,  setShowColorModal]  = useState(false);
+
   // OCR
   const [ocrMeasurements, setOcrMeasurements] = useState<number[]>([]);
   const [showOcrModal,    setShowOcrModal]    = useState(false);
@@ -764,7 +769,8 @@ export default function PlotScreen() {
   const svgPts      = points.map(p => `${p.x},${p.y}`).join(" ");
   const canvasH     = canvasSize.h;
   const sides       = getSides(points, isClosed);
-  const canvasHeight = Math.round(SCREEN_H * 0.62);
+  const canvasHeight = Math.round(SCREEN_H * 0.68);
+  const plotCentroid = isClosed && points.length >= 3 ? polygonCentroid(points) : { x: 0, y: 0 };
   const topPad      = Platform.OS === "web" ? 67 : insets.top;
   const bottomPad   = Platform.OS === "web" ? 34 : insets.bottom;
 
@@ -788,6 +794,9 @@ export default function PlotScreen() {
             {ocrLoading
               ? <ActivityIndicator size="small" color="#F59E0B" />
               : <Feather name="image" size={18} color="#F59E0B" />}
+          </TouchableOpacity>
+          <TouchableOpacity style={[styles.iconBtn, { borderColor: lineColor + "66" }]} onPress={() => setShowColorModal(true)}>
+            <View style={{ width: 14, height: 14, borderRadius: 7, backgroundColor: lineColor, borderWidth: 2, borderColor: "#0B1120" }} />
           </TouchableOpacity>
           {zoom.scale !== 1 && (
             <TouchableOpacity style={[styles.iconBtn, styles.iconBtnZoom]} onPress={resetZoom}>
@@ -829,7 +838,7 @@ export default function PlotScreen() {
               <Defs>
                 <ClipPath id="pc"><SvgPolygon points={svgPts} /></ClipPath>
               </Defs>
-              <SvgPolygon points={svgPts} fill="rgba(245,158,11,0.13)" stroke="#F59E0B" strokeWidth={2} strokeLinejoin="round" />
+              <SvgPolygon points={svgPts} fill={lineColor + "22"} stroke={lineColor} strokeWidth={2} strokeLinejoin="round" />
               {divLines.map((v, i) => (
                 <G key={i} clipPath="url(#pc)">
                   {axis === "x"
@@ -842,17 +851,17 @@ export default function PlotScreen() {
           )}
 
           {!isClosed && points.length >= 2 && (
-            <Polyline points={svgPts} fill="none" stroke="#F59E0B" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" />
+            <Polyline points={svgPts} fill="none" stroke={lineColor} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" />
           )}
           {!isClosed && points.length >= 3 && (
             <Line
               x1={points[points.length - 1].x} y1={points[points.length - 1].y}
               x2={points[0].x} y2={points[0].y}
-              stroke="#F59E0B" strokeWidth={1} strokeDasharray="4,4" opacity={0.3}
+              stroke={lineColor} strokeWidth={1} strokeDasharray="4,4" opacity={0.3}
             />
           )}
 
-          {/* ── Outer boundary segment labels ── */}
+          {/* ── Outer boundary segment labels (always outside polygon) ── */}
           {sides.map(([a, b], i) => {
             const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
             const pixLen   = dist(a, b);
@@ -860,19 +869,27 @@ export default function PlotScreen() {
             const label    = hasScale ? `${(pixLen / px2ft!).toFixed(1)} FT` : `${Math.round(pixLen)} px`;
             const ang      = lineAngle(a, b);
             const rad      = Math.atan2(b.y - a.y, b.x - a.x);
-            const offX     = -Math.sin(rad) * 15, offY = Math.cos(rad) * 15;
-            const lw       = label.length * 6.2 + 12;
+            // Perpendicular normal
+            const nx = -Math.sin(rad), ny = Math.cos(rad);
+            // Dot with vector from midpoint toward centroid — negative dot means centroid is in opposite direction
+            const toCx = plotCentroid.x - mx, toCy = plotCentroid.y - my;
+            const dot   = toCx * nx + toCy * ny;
+            // Push label AWAY from centroid (outside the polygon)
+            const sign  = dot > 0 ? -1 : 1;
+            const OUTER_OFFSET = 20;
+            const offX  = sign * nx * OUTER_OFFSET, offY = sign * ny * OUTER_OFFSET;
+            const lw    = label.length * 6.2 + 12;
             return (
               <G key={`os-${i}`} transform={`translate(${mx + offX},${my + offY}) rotate(${ang})`}>
-                <Rect x={-lw / 2} y={-8} width={lw} height={16} rx={4} fill="rgba(10,25,41,0.82)" />
-                <SvgText x={0} y={4} fontSize={9.5} fontWeight="700" fill={hasScale ? "#FCD34D" : "#64748B"} textAnchor="middle">
+                <Rect x={-lw / 2} y={-8} width={lw} height={16} rx={4} fill="rgba(10,25,41,0.88)" stroke={lineColor + "55"} strokeWidth={0.8} />
+                <SvgText x={0} y={4} fontSize={9.5} fontWeight="700" fill={hasScale ? labelColor : "#64748B"} textAnchor="middle">
                   {label}
                 </SvgText>
               </G>
             );
           })}
 
-          {/* ── Strip sub-segment labels (partial outer edges) ── */}
+          {/* ── Strip sub-segment labels (partial outer edges, always outside) ── */}
           {stripSubEdges.map(({ a, b }, i) => {
             if (!px2ft) return null;
             const pixLen = dist(a, b);
@@ -880,12 +897,16 @@ export default function PlotScreen() {
             const mx  = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
             const ang = lineAngle(a, b);
             const rad = Math.atan2(b.y - a.y, b.x - a.x);
-            const offX = -Math.sin(rad) * 26, offY = Math.cos(rad) * 26; // farther out
+            const nx   = -Math.sin(rad), ny = Math.cos(rad);
+            const toCx = plotCentroid.x - mx, toCy = plotCentroid.y - my;
+            const dot  = toCx * nx + toCy * ny;
+            const sign = dot > 0 ? -1 : 1;
+            const offX = sign * nx * 22, offY = sign * ny * 22;
             const label = `${(pixLen / px2ft).toFixed(1)} FT`;
             const lw    = label.length * 5.8 + 10;
             return (
               <G key={`sse-${i}`} transform={`translate(${mx + offX},${my + offY}) rotate(${ang})`}>
-                <Rect x={-lw / 2} y={-7} width={lw} height={14} rx={3} fill="rgba(10,25,41,0.82)" />
+                <Rect x={-lw / 2} y={-7} width={lw} height={14} rx={3} fill="rgba(10,25,41,0.88)" stroke="#93C5FD44" strokeWidth={0.7} />
                 <SvgText x={0} y={3.5} fontSize={8.5} fontWeight="700" fill="#93C5FD" textAnchor="middle">
                   {label}
                 </SvgText>
@@ -940,11 +961,11 @@ export default function PlotScreen() {
             <React.Fragment key={i}>
               {i === 0 && !isClosed && points.length >= 3 && (
                 <Circle cx={p.x} cy={p.y} r={CLOSE_THRESHOLD} fill="none"
-                  stroke="#F59E0B" strokeWidth={0.8} strokeDasharray="3,3" opacity={0.35} />
+                  stroke={lineColor} strokeWidth={0.8} strokeDasharray="3,3" opacity={0.35} />
               )}
-              <Circle cx={p.x} cy={p.y} r={i === 0 ? 9 : 6} fill="rgba(252,211,77,0.1)" />
+              <Circle cx={p.x} cy={p.y} r={i === 0 ? 9 : 6} fill={lineColor + "22"} />
               <Circle cx={p.x} cy={p.y} r={i === 0 ? 8 : 5}
-                fill={i === 0 ? "#F59E0B" : "#FCD34D"} stroke="#0B1120" strokeWidth={1.5} />
+                fill={i === 0 ? lineColor : labelColor} stroke="#0B1120" strokeWidth={1.5} />
             </React.Fragment>
           ))}
           </G>{/* end zoom G */}
@@ -1209,6 +1230,49 @@ export default function PlotScreen() {
         </View>
       </Modal>
 
+      {/* ── Color Picker Modal ─────────────────────────────────────────────── */}
+      <Modal visible={showColorModal} transparent animationType="fade" onRequestClose={() => setShowColorModal(false)}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalBox}>
+            <View style={styles.modalHeader}>
+              <View style={{ width: 18, height: 18, borderRadius: 9, backgroundColor: lineColor }} />
+              <Text style={styles.modalTitle}>Customize Colors</Text>
+            </View>
+
+            <Text style={styles.colorSectionLabel}>BOUNDARY LINE COLOR</Text>
+            <View style={styles.colorRow}>
+              {["#F59E0B","#EF4444","#22D3A3","#3B82F6","#A855F7","#EC4899","#FFFFFF","#10B981"].map(c => (
+                <TouchableOpacity key={c} onPress={() => setLineColor(c)}
+                  style={[styles.colorChip, { backgroundColor: c }, lineColor === c && styles.colorChipActive]}>
+                  {lineColor === c && <Feather name="check" size={12} color="#000" />}
+                </TouchableOpacity>
+              ))}
+            </View>
+
+            <Text style={[styles.colorSectionLabel, { marginTop: 6 }]}>LABEL TEXT COLOR</Text>
+            <View style={styles.colorRow}>
+              {["#FCD34D","#FFFFFF","#22D3A3","#93C5FD","#F87171","#86EFAC","#FCA5A5","#C4B5FD"].map(c => (
+                <TouchableOpacity key={c} onPress={() => setLabelColor(c)}
+                  style={[styles.colorChip, { backgroundColor: c }, labelColor === c && styles.colorChipActive]}>
+                  {labelColor === c && <Feather name="check" size={12} color="#000" />}
+                </TouchableOpacity>
+              ))}
+            </View>
+
+            <View style={styles.colorPreviewRow}>
+              <View style={[styles.colorPreviewLine, { backgroundColor: lineColor }]} />
+              <Text style={[styles.colorPreviewLabel, { color: labelColor }]}>208.1 FT</Text>
+              <View style={[styles.colorPreviewLine, { backgroundColor: lineColor }]} />
+            </View>
+
+            <TouchableOpacity style={styles.modalConfirm} onPress={() => setShowColorModal(false)}>
+              <Feather name="check" size={15} color="#0B1120" />
+              <Text style={styles.modalConfirmText}>Done</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
       {/* ── Manual Override Modal ──────────────────────────────────────────── */}
       <Modal visible={showOverrideModal} transparent animationType="fade" onRequestClose={() => setShowOverrideModal(false)}>
         <View style={styles.modalOverlay}>
@@ -1361,4 +1425,12 @@ const styles = StyleSheet.create({
   ocrList:     { gap: 8 },
   ocrItem:     { flexDirection: "row", alignItems: "center", gap: 10, backgroundColor: "rgba(245,158,11,0.07)", borderWidth: 1, borderColor: "rgba(245,158,11,0.2)", borderRadius: 10, paddingHorizontal: 14, paddingVertical: 11 },
   ocrItemText: { flex: 1, fontSize: 15, fontWeight: "700", color: "#FCD34D" },
+
+  colorSectionLabel: { fontSize: 10, fontWeight: "700", color: "#475569", letterSpacing: 0.8, textTransform: "uppercase" },
+  colorRow:          { flexDirection: "row", gap: 10, flexWrap: "wrap" },
+  colorChip:         { width: 34, height: 34, borderRadius: 17, alignItems: "center", justifyContent: "center", borderWidth: 2, borderColor: "transparent" },
+  colorChipActive:   { borderColor: "#F0F4FF", transform: [{ scale: 1.15 }] },
+  colorPreviewRow:   { flexDirection: "row", alignItems: "center", gap: 8, backgroundColor: "#0A1929", borderRadius: 10, paddingHorizontal: 14, paddingVertical: 12 },
+  colorPreviewLine:  { flex: 1, height: 2, borderRadius: 1 },
+  colorPreviewLabel: { fontSize: 13, fontWeight: "700" },
 });
