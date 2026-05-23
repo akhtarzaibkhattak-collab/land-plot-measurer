@@ -989,6 +989,40 @@ export default function PlotScreen() {
             );
           })}
 
+          {/* ── Total area label (no divisions) ── */}
+          {isClosed && sqFt !== null && (!showDiv || strips.length < 2) && points.length >= 3 && (() => {
+            const cx = plotCentroid.x, cy = plotCentroid.y;
+            const sqFtStr  = sqFt.toLocaleString("en-US", { maximumFractionDigits: 2 });
+            const marlasStr = marlas!.toFixed(4);
+            const boxW = Math.max(sqFtStr.length, marlasStr.length + 2) * 7.4 + 24;
+            return (
+              <G key="total-area">
+                {/* Background pill */}
+                <Rect x={cx - boxW / 2} y={cy - 26} width={boxW} height={50}
+                  rx={10} fill="rgba(10,25,41,0.78)" />
+                <Rect x={cx - boxW / 2} y={cy - 26} width={boxW} height={50}
+                  rx={10} fill="none" stroke={lineColor + "44"} strokeWidth={1} />
+                {/* Sq Ft value */}
+                <SvgText x={cx} y={cy - 6} fontSize={13} fontWeight="700"
+                  fill="#F0F4FF" textAnchor="middle"
+                  stroke="rgba(10,25,41,0.5)" strokeWidth={2} paintOrder="stroke">
+                  {sqFtStr}
+                </SvgText>
+                {/* SQ FT unit */}
+                <SvgText x={cx} y={cy + 7} fontSize={8} fontWeight="600"
+                  fill="#64748B" textAnchor="middle">
+                  SQ FT
+                </SvgText>
+                {/* Marlas value */}
+                <SvgText x={cx} y={cy + 19} fontSize={11} fontWeight="700"
+                  fill={labelColor} textAnchor="middle"
+                  stroke="rgba(10,25,41,0.5)" strokeWidth={2} paintOrder="stroke">
+                  {marlasStr} M
+                </SvgText>
+              </G>
+            );
+          })()}
+
           {/* ── Strip area labels ── */}
           {strips.map((s, i) => {
             if (s.polygon.length < 3) return null;
