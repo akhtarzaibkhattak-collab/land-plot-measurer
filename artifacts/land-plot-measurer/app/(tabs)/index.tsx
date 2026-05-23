@@ -70,6 +70,8 @@ interface LabeledSeg {
   a: Point;
   b: Point;
   pixLen: number;
+  iA?: number;
+  iB?: number;
 }
 
 // ─── Pure geometry ────────────────────────────────────────────────────────────
@@ -754,12 +756,57 @@ export default function PlotScreen() {
 
   const handleOverrideApply = () => {
     const ft = parseFloat(overrideValue);
-    if (!isNaN(ft) && ft > 0 && pendingOverrideSeg.current && canvasSize.w > 0) {
-      const newPx2ft = pendingOverrideSeg.current.pixLen / ft;
+    if (isNaN(ft) || ft <= 0 || !pendingOverrideSeg.current || canvasSize.w <= 0) {
+      setShowOverrideModal(false);
+      return;
+    }
+
+    const seg  = pendingOverrideSeg.current;
+    const cur  = px2ftRef.current;
+
+    // ── Case 1: No scale set yet → use this measurement to establish the scale ──
+    if (!cur) {
+      const newPx2ft = seg.pixLen / ft;
       const newRealW = canvasSize.w / newPx2ft;
       setScaleWidth(newRealW.toFixed(3));
       if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      setShowOverrideModal(false);
+      return;
     }
+
+    // ── Case 2: Scale already set → physically resize this segment only ─────────
+    // Keep midpoint fixed; scale both endpoints along the segment direction.
+    const { iA, iB } = seg;
+    if (iA === undefined || iB === undefined) {
+      // Division line or sub-edge: fall back to scale-change
+      const newPx2ft = seg.pixLen / ft;
+      const newRealW = canvasSize.w / newPx2ft;
+      setScaleWidth(newRealW.toFixed(3));
+      setShowOverrideModal(false);
+      return;
+    }
+
+    const desiredPx = ft * cur;
+    const { a, b } = seg;
+    const mx = (a.x + b.x) / 2;
+    const my = (a.y + b.y) / 2;
+    const raw = dist(a, b);
+    if (raw < 1) { setShowOverrideModal(false); return; }
+
+    const ux = (b.x - a.x) / raw;
+    const uy = (b.y - a.y) / raw;
+    const half = desiredPx / 2;
+
+    const newA: Point = { x: mx - ux * half, y: my - uy * half };
+    const newB: Point = { x: mx + ux * half, y: my + uy * half };
+
+    const updated = [...pointsRef.current];
+    updated[iA] = newA;
+    updated[iB] = newB;
+
+    pointsRef.current = updated;
+    setPoints(updated);
+    if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     setShowOverrideModal(false);
   };
 
@@ -825,8 +872,12 @@ export default function PlotScreen() {
   const allLabeledSegs = useMemo<LabeledSeg[]>(() => {
     if (!isClosed) return [];
     const segs: LabeledSeg[] = [];
-    // Outer boundary
-    getSides(points, true).forEach(([a, b]) => segs.push({ a, b, pixLen: dist(a, b) }));
+    // Outer boundary — include point indices so override can physically resize them
+    const n = points.length;
+    for (let i = 0; i < n; i++) {
+      const a = points[i], b = points[(i + 1) % n];
+      segs.push({ a, b, pixLen: dist(a, b), iA: i, iB: (i + 1) % n });
+    }
     // Division line chords
     divLines.forEach((v, i) => {
       const chord = chords[i];
@@ -1620,7 +1671,9 @@ export default function PlotScreen() {
               <Text style={styles.modalTitle}>Override Measurement</Text>
             </View>
             <Text style={styles.modalSub}>
-              Enter the actual real-world length of this segment. The scale will be recalibrated so all measurements match.
+              {px2ft
+                ? "Enter the correct length. Only this side will be resized — all other sides stay exactly as they are."
+                : "Enter the real-world length of this side. This sets the scale for the whole plot."}
             </Text>
             {pendingOverrideSeg.current && px2ft && (
               <View style={styles.modalStats}>
@@ -1649,7 +1702,9 @@ export default function PlotScreen() {
               <Text style={styles.overrideUnit}>FT</Text>
             </View>
             <Text style={styles.overrideNote}>
-              This recalibrates the global scale from the selected segment.
+              {px2ft
+                ? "Tip: set the canvas width first, then tap each side label to correct it independently."
+                : "Tip: enter any side you know, then the scale is set for all sides."}
             </Text>
             <View style={styles.modalBtns}>
               <TouchableOpacity style={styles.modalCancel} onPress={() => setShowOverrideModal(false)}>
