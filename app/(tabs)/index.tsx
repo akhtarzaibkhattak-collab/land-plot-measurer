@@ -212,45 +212,72 @@ function buildPDFSvg(
   strips: StripInfo[],
   stripSubEdges: Array<{ a: Point; b: Point }>,
   px2ft: number | null,
-  canvasSize: { w: number; h: number }
+  canvasSize: { w: number; h: number },
+  orientation: "portrait" | "landscape",
+  lineColor: string,
+  labelColor: string
 ): string {
-  const W  = 500;
-  const H  = canvasSize.w > 0 ? Math.round((canvasSize.h * W) / canvasSize.w) : 280;
-  const sc = canvasSize.w > 0 ? W / canvasSize.w : 1;
-  const sx = (v: number) => (v * sc).toFixed(1);
-  const svgPts = points.map(p => `${sx(p.x)},${sx(p.y)}`).join(" ");
+  // Target plot area width (leaving room for outside labels)
+  const PAD    = 48;   // padding so outside labels are never clipped
+  const plotW  = orientation === "landscape" ? 710 : 490;
+  const sc     = canvasSize.w > 0 ? plotW / canvasSize.w : 1;
+  const plotH  = canvasSize.h > 0 ? canvasSize.h * sc : plotW * 0.56;
+  const W      = plotW + PAD * 2;
+  const H      = Math.round(plotH + PAD * 2);
+
+  // Coordinate helpers — include PAD offset so plot floats centred in SVG
+  const sx  = (v: number) => (v * sc + PAD).toFixed(1);
+  const sy  = (v: number) => (v * sc + PAD).toFixed(1);
+  const svgPts = points.map(p => `${sx(p.x)},${sy(p.y)}`).join(" ");
+
+  // Centroid in scaled+padded coords (for outside-label direction)
+  const raw = polygonCentroid(points);
+  const csx = raw.x * sc + PAD;
+  const csy = raw.y * sc + PAD;
 
   let c = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">`;
-  c += `<rect width="${W}" height="${H}" fill="#f0f4f8" rx="6"/>`;
-  c += `<defs><clipPath id="pdfpc"><polygon points="${svgPts}"/></clipPath></defs>`;
-  c += `<polygon points="${svgPts}" fill="rgba(217,119,6,0.12)" stroke="#D97706" stroke-width="2" stroke-linejoin="round"/>`;
+  c += `<rect width="${W}" height="${H}" fill="#f8fafc"/>`;
+  // Subtle grid
+  c += `<defs>`;
+  c += `  <pattern id="grid" width="20" height="20" patternUnits="userSpaceOnUse">`;
+  c += `    <path d="M 20 0 L 0 0 0 20" fill="none" stroke="#e2e8f0" stroke-width="0.4"/>`;
+  c += `  </pattern>`;
+  c += `  <clipPath id="pdfpc"><polygon points="${svgPts}"/></clipPath>`;
+  c += `</defs>`;
+  c += `<rect width="${W}" height="${H}" fill="url(#grid)"/>`;
+  c += `<polygon points="${svgPts}" fill="${lineColor}15" stroke="${lineColor}" stroke-width="2.2" stroke-linejoin="round"/>`;
 
-  // Division lines
+  // Division lines (clipped inside polygon)
   divLines.forEach(v => {
     if (axis === "x") {
-      c += `<line x1="${sx(v)}" y1="0" x2="${sx(v)}" y2="${H}" stroke="#0d9488" stroke-width="1.5" stroke-dasharray="5,3" clip-path="url(#pdfpc)"/>`;
+      c += `<line x1="${sx(v)}" y1="${PAD}" x2="${sx(v)}" y2="${(plotH + PAD).toFixed(1)}" stroke="#0d9488" stroke-width="1.5" stroke-dasharray="6,3" clip-path="url(#pdfpc)"/>`;
     } else {
-      c += `<line x1="0" y1="${sx(v)}" x2="${W}" y2="${sx(v)}" stroke="#0d9488" stroke-width="1.5" stroke-dasharray="5,3" clip-path="url(#pdfpc)"/>`;
+      c += `<line x1="${PAD}" y1="${sy(v)}" x2="${(plotW + PAD).toFixed(1)}" y2="${sy(v)}" stroke="#0d9488" stroke-width="1.5" stroke-dasharray="6,3" clip-path="url(#pdfpc)"/>`;
     }
   });
 
   if (px2ft) {
-    // Outer boundary labels
+    // ── Outer boundary labels — pushed OUTSIDE using centroid direction ──
     getSides(points, true).forEach(([a, b]) => {
-      const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+      const smx  = (a.x + b.x) / 2 * sc + PAD;
+      const smy  = (a.y + b.y) / 2 * sc + PAD;
       const ftLen = dist(a, b) / px2ft;
       const ang   = lineAngle(a, b);
       const rad   = Math.atan2(b.y - a.y, b.x - a.x);
-      const px    = -Math.sin(rad) * 14, py = Math.cos(rad) * 14;
+      const nnx   = -Math.sin(rad), nny = Math.cos(rad);
+      const dot   = (csx - smx) * nnx + (csy - smy) * nny;
+      const sign  = dot > 0 ? -1 : 1;
+      const LOFF  = 22;
+      const offX  = sign * nnx * LOFF, offY = sign * nny * LOFF;
       const lbl   = `${ftLen.toFixed(1)} FT`;
-      const lw    = lbl.length * 5.6 + 10;
-      c += `<g transform="translate(${sx(mx + px)},${sx(my + py)}) rotate(${ang})">`;
-      c += `<rect x="${(-lw/2).toFixed(1)}" y="-8" width="${lw.toFixed(1)}" height="16" rx="3" fill="white" stroke="#D97706" stroke-width="0.6"/>`;
-      c += `<text x="0" y="4" font-size="8.5" font-weight="bold" fill="#b45309" text-anchor="middle" font-family="Arial,sans-serif">${lbl}</text>`;
+      const lw    = lbl.length * 5.8 + 12;
+      c += `<g transform="translate(${(smx + offX).toFixed(1)},${(smy + offY).toFixed(1)}) rotate(${ang})">`;
+      c += `<rect x="${(-lw/2).toFixed(1)}" y="-8.5" width="${lw.toFixed(1)}" height="17" rx="3.5" fill="white" stroke="${lineColor}" stroke-width="0.8"/>`;
+      c += `<text x="0" y="4.5" font-size="9" font-weight="bold" fill="#92400e" text-anchor="middle" font-family="Arial,sans-serif">${lbl}</text>`;
       c += `</g>`;
     });
 
-    // Chord labels on division lines
+    // ── Chord labels on division lines ──
     divLines.forEach(v => {
       const chord = getChord(points, v, axis);
       if (!chord) return;
@@ -258,28 +285,32 @@ function buildPDFSvg(
       const lbl = `${chordFt.toFixed(1)} FT`;
       const lw  = lbl.length * 5.6 + 10;
       if (axis === "x") {
-        c += `<g transform="translate(${sx(v)},${sx(chord.mid)}) rotate(-90)">`;
+        c += `<g transform="translate(${sx(v)},${(chord.mid * sc + PAD).toFixed(1)}) rotate(-90)">`;
       } else {
-        c += `<g transform="translate(${sx(chord.mid)},${(Number(sx(v)) - 14).toFixed(1)})">`;
+        c += `<g transform="translate(${(chord.mid * sc + PAD).toFixed(1)},${(Number(sy(v)) - 14).toFixed(1)})">`;
       }
-      c += `<rect x="${(-lw/2).toFixed(1)}" y="-8" width="${lw.toFixed(1)}" height="16" rx="3" fill="rgba(13,148,136,0.12)" stroke="#0d9488" stroke-width="0.6"/>`;
+      c += `<rect x="${(-lw/2).toFixed(1)}" y="-8" width="${lw.toFixed(1)}" height="16" rx="3" fill="rgba(13,148,136,0.1)" stroke="#0d9488" stroke-width="0.7"/>`;
       c += `<text x="0" y="4" font-size="8.5" font-weight="bold" fill="#0d9488" text-anchor="middle" font-family="Arial,sans-serif">${lbl}</text>`;
       c += `</g>`;
     });
 
-    // Strip sub-segment labels (partial outer edges)
+    // ── Strip sub-segment labels — also pushed outside ──
     stripSubEdges.forEach(({ a, b }) => {
       const pixLen = dist(a, b);
       if (pixLen < 8) return;
-      const mx  = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
-      const ang = lineAngle(a, b);
-      const rad = Math.atan2(b.y - a.y, b.x - a.x);
-      const px  = -Math.sin(rad) * 8, py = Math.cos(rad) * 8;
+      const smx  = (a.x + b.x) / 2 * sc + PAD;
+      const smy  = (a.y + b.y) / 2 * sc + PAD;
+      const ang  = lineAngle(a, b);
+      const rad  = Math.atan2(b.y - a.y, b.x - a.x);
+      const nnx  = -Math.sin(rad), nny = Math.cos(rad);
+      const dot  = (csx - smx) * nnx + (csy - smy) * nny;
+      const sign = dot > 0 ? -1 : 1;
+      const offX = sign * nnx * 18, offY = sign * nny * 18;
       const ftLen = pixLen / px2ft;
       const lbl   = `${ftLen.toFixed(1)} FT`;
-      const lw    = lbl.length * 4.8 + 8;
-      c += `<g transform="translate(${sx(mx + px)},${sx(my + py)}) rotate(${ang})">`;
-      c += `<rect x="${(-lw/2).toFixed(1)}" y="-6" width="${lw.toFixed(1)}" height="13" rx="2.5" fill="rgba(252,211,77,0.15)" stroke="#FCD34D" stroke-width="0.5"/>`;
+      const lw    = lbl.length * 5.0 + 8;
+      c += `<g transform="translate(${(smx + offX).toFixed(1)},${(smy + offY).toFixed(1)}) rotate(${ang})">`;
+      c += `<rect x="${(-lw/2).toFixed(1)}" y="-6.5" width="${lw.toFixed(1)}" height="13" rx="2.5" fill="rgba(252,211,77,0.18)" stroke="#D97706" stroke-width="0.5"/>`;
       c += `<text x="0" y="3.5" font-size="7.5" font-weight="bold" fill="#92400e" text-anchor="middle" font-family="Arial,sans-serif">${lbl}</text>`;
       c += `</g>`;
     });
@@ -288,15 +319,15 @@ function buildPDFSvg(
   // Strip area labels
   strips.forEach(s => {
     if (s.polygon.length < 3) return;
-    const cx = sx(s.centroid.x);
-    const cy = Number(sx(s.centroid.y));
-    c += `<text x="${cx}" y="${(cy - 7).toFixed(1)}" font-size="9" font-weight="bold" fill="#1e3a5f" text-anchor="middle" font-family="Arial,sans-serif">${s.sqFt.toFixed(2)} ft²</text>`;
-    c += `<text x="${cx}" y="${(cy + 7).toFixed(1)}" font-size="8.5" fill="#D97706" text-anchor="middle" font-family="Arial,sans-serif">${s.marlas.toFixed(4)} M</text>`;
+    const cx = (s.centroid.x * sc + PAD).toFixed(1);
+    const cy = s.centroid.y * sc + PAD;
+    c += `<text x="${cx}" y="${(cy - 7).toFixed(1)}" font-size="9.5" font-weight="bold" fill="#1e3a5f" text-anchor="middle" font-family="Arial,sans-serif">${s.sqFt.toFixed(2)} ft²</text>`;
+    c += `<text x="${cx}" y="${(cy + 8).toFixed(1)}" font-size="9" fill="#D97706" text-anchor="middle" font-family="Arial,sans-serif">${s.marlas.toFixed(4)} M</text>`;
   });
 
   // Corner dots
   points.forEach((p, i) => {
-    c += `<circle cx="${sx(p.x)}" cy="${sx(p.y)}" r="${i === 0 ? 5 : 3.5}" fill="${i === 0 ? "#D97706" : "#FBBF24"}" stroke="white" stroke-width="1.5"/>`;
+    c += `<circle cx="${sx(p.x)}" cy="${sy(p.y)}" r="${i === 0 ? 5 : 3.5}" fill="${i === 0 ? lineColor : labelColor}" stroke="white" stroke-width="1.5"/>`;
   });
 
   c += `</svg>`;
@@ -310,7 +341,8 @@ function buildPDFHtml(
   totalMarlas: number,
   scaleWidth: string,
   hasDivisions: boolean,
-  splitDir: "length" | "breadth"
+  splitDir: "length" | "breadth",
+  orientation: "portrait" | "landscape"
 ): string {
   const date     = new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" });
   const dirLabel = splitDir === "length" ? "Split by Length (vertical cuts)" : "Split by Breadth (horizontal cuts)";
@@ -320,36 +352,52 @@ function buildPDFHtml(
   const rows     = strips.map((s, i) =>
     `<tr><td>Part ${i + 1}</td><td>${s.sqFt.toFixed(4)}</td><td>${s.marlas.toFixed(4)}</td></tr>`
   ).join("");
+  const orientLabel = orientation === "landscape" ? "Landscape" : "Portrait";
 
   return `<!DOCTYPE html>
 <html><head><meta charset="UTF-8">
 <style>
+  @page { size: A4 ${orientation}; margin: 14mm 18mm; }
   *{margin:0;padding:0;box-sizing:border-box}
-  body{font-family:Arial,Helvetica,sans-serif;background:#fff;color:#1a1a1a;padding:28px;font-size:13px}
-  h1{font-size:22px;color:#D97706;margin-bottom:4px}
-  .meta{font-size:12px;color:#555;margin-bottom:20px;line-height:2}
-  .dir-chip{display:inline-block;background:#FEF3C7;color:#92400E;border:1px solid #FDE68A;border-radius:20px;padding:2px 10px;font-size:11px;font-weight:700;margin-left:4px}
-  .eq-chip{display:inline-block;background:#dcfce7;color:#166534;border:1px solid #bbf7d0;border-radius:20px;padding:2px 10px;font-size:11px;font-weight:700;margin-left:4px}
-  .plot-box{border:1px solid #e5e7eb;border-radius:8px;padding:12px;background:#f9fafb;margin-bottom:20px;text-align:center}
-  .sec{font-size:14px;font-weight:bold;color:#374151;margin-bottom:8px}
-  table{width:100%;border-collapse:collapse;font-size:13px}
-  thead th{background:#D97706;color:#fff;padding:9px 14px;text-align:center}
-  tbody td{padding:8px 14px;text-align:center;border-bottom:1px solid #f3f4f6}
+  body{font-family:Arial,Helvetica,sans-serif;background:#fff;color:#1a1a1a;font-size:13px}
+  .page-wrap{width:100%;display:flex;flex-direction:column;align-items:center}
+  .header-row{width:100%;display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:14px;padding-bottom:10px;border-bottom:2px solid #D97706}
+  .header-left h1{font-size:20px;color:#D97706;margin-bottom:2px}
+  .header-left .sub{font-size:11px;color:#6b7280}
+  .orient-badge{font-size:10px;font-weight:700;color:#92400E;background:#FEF3C7;border:1px solid #FDE68A;border-radius:12px;padding:3px 10px;white-space:nowrap;margin-top:4px}
+  .meta{font-size:11.5px;color:#555;margin-bottom:14px;line-height:1.85;width:100%}
+  .dir-chip{display:inline-block;background:#FEF3C7;color:#92400E;border:1px solid #FDE68A;border-radius:20px;padding:2px 10px;font-size:10px;font-weight:700;margin-left:4px}
+  .eq-chip{display:inline-block;background:#dcfce7;color:#166534;border:1px solid #bbf7d0;border-radius:20px;padding:2px 10px;font-size:10px;font-weight:700;margin-left:4px}
+  .plot-box{width:100%;display:flex;justify-content:center;align-items:center;border:1.5px solid #e5e7eb;border-radius:10px;padding:0;background:#f9fafb;margin-bottom:18px;overflow:hidden}
+  .plot-box svg{display:block;max-width:100%;height:auto}
+  .sec{font-size:13px;font-weight:bold;color:#374151;margin-bottom:7px;width:100%;padding-bottom:4px;border-bottom:1px solid #f3f4f6}
+  table{width:100%;border-collapse:collapse;font-size:12.5px}
+  thead th{background:#D97706;color:#fff;padding:8px 12px;text-align:center}
+  tbody td{padding:7px 12px;text-align:center;border-bottom:1px solid #f3f4f6}
   tbody tr:nth-child(even) td{background:#fffbf0}
-  tfoot td{background:#FEF3C7;font-weight:bold;padding:9px 14px;text-align:center;border-top:2px solid #D97706}
-  .note{margin-top:12px;font-size:11px;color:#6b7280;font-style:italic}
-  .footer{margin-top:24px;font-size:11px;color:#9ca3af;text-align:center;padding-top:12px;border-top:1px solid #f3f4f6}
+  tfoot td{background:#FEF3C7;font-weight:bold;padding:8px 12px;text-align:center;border-top:2px solid #D97706}
+  .note{margin-top:10px;font-size:10.5px;color:#6b7280;font-style:italic}
+  .footer{margin-top:20px;font-size:10.5px;color:#9ca3af;text-align:center;padding-top:10px;border-top:1px solid #f3f4f6;width:100%}
 </style></head><body>
-  <h1>Land Plot Measurement Report</h1>
+<div class="page-wrap">
+  <div class="header-row">
+    <div class="header-left">
+      <h1>Land Plot Measurement Report</h1>
+      <div class="sub">Generated: ${date} &nbsp;·&nbsp; 1 Marla = ${MARLA_SQ_FT} Sq Ft</div>
+    </div>
+    <div class="orient-badge">⬜ ${orientLabel}</div>
+  </div>
+
   <p class="meta">
-    Generated: ${date}<br>
-    Canvas width: ${scaleWidth} ft &nbsp;&middot;&nbsp; 1 Marla = ${MARLA_SQ_FT} Sq Ft<br>
+    Canvas width: <strong>${scaleWidth} ft</strong>
     ${hasDivisions
-      ? `Division: <span class="dir-chip">${dirIcon} ${dirLabel}</span>
-         <span class="eq-chip">✓ Mathematically Equal Area</span>`
+      ? `&nbsp;·&nbsp; Division: <span class="dir-chip">${dirIcon} ${dirLabel}</span>
+         <span class="eq-chip">✓ Equal Area</span>`
       : ""}
   </p>
+
   <div class="plot-box">${svgContent}</div>
+
   ${hasDivisions
     ? `<p class="sec">Equal-Area Division Summary</p>
   <table>
@@ -366,7 +414,8 @@ function buildPDFHtml(
       <tr><td>Marlas</td><td>${totalMarlas.toFixed(4)}</td></tr>
     </tbody>
   </table>`}
-  <div class="footer">Land Plot Measurer &nbsp;&middot;&nbsp; 1 Marla = ${MARLA_SQ_FT} Sq Ft</div>
+  <div class="footer">Land Plot Measurer &nbsp;·&nbsp; Professional Land Measurement Tool</div>
+</div>
 </body></html>`;
 }
 
@@ -403,6 +452,10 @@ export default function PlotScreen() {
   const [lineColor,       setLineColor]       = useState("#F59E0B");
   const [labelColor,      setLabelColor]      = useState("#FCD34D");
   const [showColorModal,  setShowColorModal]  = useState(false);
+
+  // Export options
+  const [showExportModal,    setShowExportModal]    = useState(false);
+  const [exportOrientation,  setExportOrientation]  = useState<"portrait" | "landscape">("portrait");
 
   // OCR
   const [ocrMeasurements, setOcrMeasurements] = useState<number[]>([]);
@@ -743,18 +796,21 @@ export default function PlotScreen() {
   };
 
   // ── PDF export ────────────────────────────────────────────────────────────
-  const handleExportPDF = async () => {
+  const handleExportPDF = async (orientation: "portrait" | "landscape") => {
     if (!isClosed || points.length < 3) { Alert.alert("No plot", "Draw and close a plot first."); return; }
     if (!sqFt) { Alert.alert("Scale required", "Enter the canvas width in feet before exporting."); return; }
+    setShowExportModal(false);
     setExporting(true);
     try {
       const hasDivisions = showDiv && strips.length >= 2;
       const exportStrips = hasDivisions
         ? strips
         : [{ polygon: points, sqFt: sqFt!, marlas: marlas!, centroid: polygonCentroid(points) }];
-      const svgContent = buildPDFSvg(points, divLines, axis, exportStrips, stripSubEdges, px2ft, canvasSize);
-      const html       = buildPDFHtml(svgContent, exportStrips, sqFt!, marlas!, scaleWidth, hasDivisions, splitDir);
-      const { uri }    = await Print.printToFileAsync({ html, base64: false });
+      const svgContent = buildPDFSvg(points, divLines, axis, exportStrips, stripSubEdges, px2ft, canvasSize, orientation, lineColor, labelColor);
+      const html       = buildPDFHtml(svgContent, exportStrips, sqFt!, marlas!, scaleWidth, hasDivisions, splitDir, orientation);
+      const pageW      = orientation === "landscape" ? 842 : 595;
+      const pageH      = orientation === "landscape" ? 595 : 842;
+      const { uri }    = await Print.printToFileAsync({ html, base64: false, width: pageW, height: pageH });
       if (await Sharing.isAvailableAsync()) {
         await Sharing.shareAsync(uri, { mimeType: "application/pdf", dialogTitle: "Share Land Plot Report", UTI: "com.adobe.pdf" });
       } else {
@@ -1136,7 +1192,10 @@ export default function PlotScreen() {
           {/* Export PDF */}
           <TouchableOpacity
             style={[styles.exportBtn, (!isClosed || !sqFt || exporting) && styles.exportBtnDisabled]}
-            onPress={handleExportPDF}
+            onPress={() => {
+              if (!isClosed || !sqFt || exporting) return;
+              setShowExportModal(true);
+            }}
             disabled={!isClosed || !sqFt || exporting}
           >
             {exporting
@@ -1149,6 +1208,81 @@ export default function PlotScreen() {
           </TouchableOpacity>
         </ScrollView>
       </KeyboardAvoidingView>
+
+      {/* ── Export Options Modal ───────────────────────────────────────────── */}
+      <Modal visible={showExportModal} transparent animationType="fade" onRequestClose={() => setShowExportModal(false)}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalBox}>
+            <View style={styles.modalHeader}>
+              <Feather name="file-text" size={20} color="#F59E0B" />
+              <Text style={styles.modalTitle}>Export PDF Report</Text>
+            </View>
+            <Text style={styles.modalSub}>Choose page orientation before exporting. The plot will be centered and scaled to fit the page.</Text>
+
+            {/* Orientation toggle */}
+            <Text style={styles.colorSectionLabel}>PAGE ORIENTATION</Text>
+            <View style={styles.orientRow}>
+              <TouchableOpacity
+                style={[styles.orientBtn, exportOrientation === "portrait" && styles.orientBtnActive]}
+                onPress={() => setExportOrientation("portrait")}
+                activeOpacity={0.75}
+              >
+                <View style={styles.orientIcon}>
+                  <View style={[styles.orientPage, { width: 28, height: 38 }, exportOrientation === "portrait" && { borderColor: "#F59E0B" }]} />
+                </View>
+                <Text style={[styles.orientLabel, exportOrientation === "portrait" && { color: "#F59E0B" }]}>Portrait</Text>
+                <Text style={styles.orientSub}>A4 · 595 × 842 pt</Text>
+                {exportOrientation === "portrait" && <Feather name="check-circle" size={14} color="#F59E0B" style={{ marginTop: 4 }} />}
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.orientBtn, exportOrientation === "landscape" && styles.orientBtnActive]}
+                onPress={() => setExportOrientation("landscape")}
+                activeOpacity={0.75}
+              >
+                <View style={styles.orientIcon}>
+                  <View style={[styles.orientPage, { width: 38, height: 28 }, exportOrientation === "landscape" && { borderColor: "#F59E0B" }]} />
+                </View>
+                <Text style={[styles.orientLabel, exportOrientation === "landscape" && { color: "#F59E0B" }]}>Landscape</Text>
+                <Text style={styles.orientSub}>A4 · 842 × 595 pt</Text>
+                {exportOrientation === "landscape" && <Feather name="check-circle" size={14} color="#F59E0B" style={{ marginTop: 4 }} />}
+              </TouchableOpacity>
+            </View>
+
+            {/* Summary */}
+            <View style={styles.exportSummaryBox}>
+              <View style={styles.exportSummaryRow}>
+                <Feather name="layers" size={12} color="#64748B" />
+                <Text style={styles.exportSummaryText}>
+                  Plot · {sqFt?.toLocaleString("en-US", { maximumFractionDigits: 2 }) ?? "—"} ft²  ·  {marlas?.toFixed(4) ?? "—"} Marlas
+                </Text>
+              </View>
+              {showDiv && strips.length >= 2 && (
+                <View style={styles.exportSummaryRow}>
+                  <Feather name="grid" size={12} color="#22D3A3" />
+                  <Text style={[styles.exportSummaryText, { color: "#22D3A3" }]}>
+                    {strips.length} equal parts included
+                  </Text>
+                </View>
+              )}
+              <View style={styles.exportSummaryRow}>
+                <View style={{ width: 10, height: 10, borderRadius: 5, backgroundColor: lineColor }} />
+                <Text style={styles.exportSummaryText}>Line color · Label color applied</Text>
+              </View>
+            </View>
+
+            <View style={styles.modalBtns}>
+              <TouchableOpacity style={styles.modalCancel} onPress={() => setShowExportModal(false)}>
+                <Text style={styles.modalCancelText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.modalConfirmAmber} onPress={() => handleExportPDF(exportOrientation)}>
+                <Feather name="share-2" size={15} color="#0B1120" />
+                <Text style={styles.modalConfirmText}>Export PDF</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
 
       {/* ── Save Modal ─────────────────────────────────────────────────────── */}
       <Modal visible={showSaveModal} transparent animationType="fade" onRequestClose={() => setShowSaveModal(false)}>
@@ -1433,4 +1567,16 @@ const styles = StyleSheet.create({
   colorPreviewRow:   { flexDirection: "row", alignItems: "center", gap: 8, backgroundColor: "#0A1929", borderRadius: 10, paddingHorizontal: 14, paddingVertical: 12 },
   colorPreviewLine:  { flex: 1, height: 2, borderRadius: 1 },
   colorPreviewLabel: { fontSize: 13, fontWeight: "700" },
+
+  // Export orientation modal
+  orientRow:       { flexDirection: "row", gap: 12 },
+  orientBtn:       { flex: 1, alignItems: "center", gap: 6, backgroundColor: "#0B1120", borderWidth: 1.5, borderColor: "#1E2D45", borderRadius: 12, paddingVertical: 14, paddingHorizontal: 10 },
+  orientBtnActive: { borderColor: "#F59E0B", backgroundColor: "rgba(245,158,11,0.07)" },
+  orientIcon:      { alignItems: "center", justifyContent: "center", height: 46 },
+  orientPage:      { borderWidth: 2, borderColor: "#2D3F58", borderRadius: 3, backgroundColor: "#151F32" },
+  orientLabel:     { fontSize: 14, fontWeight: "700", color: "#90A4AE" },
+  orientSub:       { fontSize: 10, color: "#475569" },
+  exportSummaryBox:  { backgroundColor: "#0B1120", borderRadius: 10, borderWidth: 1, borderColor: "#1E2D45", paddingHorizontal: 14, paddingVertical: 10, gap: 7 },
+  exportSummaryRow:  { flexDirection: "row", alignItems: "center", gap: 8 },
+  exportSummaryText: { fontSize: 12, color: "#64748B", flex: 1 },
 });
